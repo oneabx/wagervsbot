@@ -1,9 +1,11 @@
 import * as dotenv from "dotenv";
+
+// Load environment variables first
+dotenv.config();
+
 import { startBot } from "./services/telegramService";
 import { initializeBalanceMonitoring } from "./services/StartupService";
 import { TELEGRAM_BOT_TOKEN } from "./config";
-
-dotenv.config();
 
 if (!TELEGRAM_BOT_TOKEN) {
   console.error("TELEGRAM_BOT_TOKEN is not set in environment variables");
