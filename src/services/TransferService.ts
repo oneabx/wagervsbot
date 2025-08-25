@@ -12,7 +12,12 @@ import {
   createAssociatedTokenAccountInstruction,
 } from "@solana/spl-token";
 import { getConnection, getAdminPublicKey } from "./SolanaService";
-import { TOKEN_MULTIPLIER, USDC_MULTIPLIER } from "../config/token";
+import {
+  TOKEN_MULTIPLIER,
+  USDC_MULTIPLIER,
+  VS_TOKEN_MINT_ADDRESS,
+  ADMIN_WALLET_PRIVATE_KEY,
+} from "../config";
 import bs58 from "bs58";
 
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -204,18 +209,16 @@ export async function transferVSTokens(
     );
 
     const connection = getConnection();
-    const adminPrivateKey = process.env.ADMIN_WALLET_PRIVATE_KEY;
 
-    if (!adminPrivateKey) {
+    if (!ADMIN_WALLET_PRIVATE_KEY) {
       return { success: false, error: "Admin private key not found" };
     }
 
-    const adminKeypair = Keypair.fromSecretKey(bs58.decode(adminPrivateKey));
-    const toPubkey = new PublicKey(toPublicKey);
-    const vsTokenMint = new PublicKey(
-      process.env.VS_TOKEN_MINT_ADDRESS ||
-        "7SGrxHJFwNcsjkeu5WqZZKpB1b8LayWZLtrEEtBYhLjW"
+    const adminKeypair = Keypair.fromSecretKey(
+      bs58.decode(ADMIN_WALLET_PRIVATE_KEY)
     );
+    const toPubkey = new PublicKey(toPublicKey);
+    const vsTokenMint = new PublicKey(VS_TOKEN_MINT_ADDRESS);
 
     const adminTokenAccount = await getAssociatedTokenAddress(
       vsTokenMint,

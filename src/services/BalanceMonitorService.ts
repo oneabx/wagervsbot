@@ -2,11 +2,7 @@ import { Connection, PublicKey, AccountInfo } from "@solana/web3.js";
 import { getAccount, getAssociatedTokenAddress } from "@solana/spl-token";
 import { getConnection } from "./SolanaService";
 import { updateWalletBalance } from "../models/WalletModel";
-import { TOKEN_MULTIPLIER } from "../config/token";
-
-const VS_TOKEN_MINT_ADDRESS =
-  process.env.VS_TOKEN_MINT_ADDRESS ||
-  "7SGrxHJFwNcsjkeu5WqZZKpB1b8LayWZLtrEEtBYhLjW";
+import { TOKEN_MULTIPLIER, VS_TOKEN_MINT_ADDRESS } from "../config";
 
 interface WalletBalance {
   sol_amount: number;

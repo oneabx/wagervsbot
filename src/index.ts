@@ -1,14 +1,12 @@
 import * as dotenv from "dotenv";
 import { startBot } from "./services/telegramService";
 import { initializeBalanceMonitoring } from "./services/StartupService";
+import { TELEGRAM_BOT_TOKEN } from "./config";
 
-// Load environment variables
 dotenv.config();
 
-// Check for required environment variables
-const token = process.env.BOT_TOKEN;
-if (!token) {
-  console.error("BOT_TOKEN is not set in environment variables");
+if (!TELEGRAM_BOT_TOKEN) {
+  console.error("TELEGRAM_BOT_TOKEN is not set in environment variables");
   process.exit(1);
 }
 
@@ -18,7 +16,7 @@ async function initializeApp() {
 
     await initializeBalanceMonitoring();
 
-    startBot(token as string);
+    startBot(TELEGRAM_BOT_TOKEN!);
 
     console.log("📱 Bot initialized successfully");
     console.log("🚀 Ready to handle wager requests!");
@@ -30,7 +28,6 @@ async function initializeApp() {
 
 initializeApp();
 
-// Handle graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\n🛑 Shutting down Wager Bot...");
   process.exit(0);
