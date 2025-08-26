@@ -1,39 +1,13 @@
-import mysql from "mysql2/promise";
-import { createDatabaseConnection } from "../config/database";
-
-export interface Wager {
-  id?: number;
-  creator_telegram_user_id: number;
-  category: string;
-  name: string;
-  description: string;
-  image_url?: string;
-  side_1: string;
-  side_2: string;
-  wager_end_time: Date;
-  wager_type: "private" | "public";
-  status: "active" | "ended" | "cancelled";
-  total_pool_amount?: number;
-  winning_side?: string;
-  created_at?: Date;
-  updated_at?: Date;
-}
-
-export interface CreateWagerRequest {
-  creator_telegram_user_id: number;
-  category: string;
-  name: string;
-  description: string;
-  image_url?: string;
-  side_1: string;
-  side_2: string;
-  wager_end_time: Date;
-  wager_type: "private" | "public";
-}
-
-async function getConnection(): Promise<mysql.Connection> {
-  return await createDatabaseConnection();
-}
+import {
+  createWager as createWagerInDB,
+  getAllWagers as getAllWagersFromDB,
+  getWagerById as getWagerByIdFromDB,
+  getWagersByCategory as getWagersByCategoryFromDB,
+  updateWagerStatus,
+  Wager,
+  CreateWagerRequest,
+} from "../models/WagerModel";
+import { Keypair } from "@solana/web3.js";
 
 export interface WagerResponse {
   success: boolean;
@@ -63,7 +37,6 @@ export async function createNewWager(
   request: CreateWagerRequest
 ): Promise<WagerResponse> {
   try {
-    // Validate required fields
     if (
       !request.creator_telegram_user_id ||
       !request.category ||
@@ -80,7 +53,6 @@ export async function createNewWager(
       };
     }
 
-    // Validate category
     if (!WAGER_CATEGORIES.includes(request.category as WagerCategory)) {
       return {
         success: false,
@@ -90,7 +62,6 @@ export async function createNewWager(
       };
     }
 
-    // Validate wager type
     if (!WAGER_TYPES.includes(request.wager_type as WagerType)) {
       return {
         success: false,
@@ -98,7 +69,6 @@ export async function createNewWager(
       };
     }
 
-    // Validate wager end time (must be in the future)
     const now = new Date();
     const endTime = new Date(request.wager_end_time);
     if (endTime <= now) {
@@ -108,10 +78,16 @@ export async function createNewWager(
       };
     }
 
-    // Create the wager
-    const wager = await createWagerInDB(request);
+    const side1Wallet = Keypair.generate();
+    const side2Wallet = Keypair.generate();
 
-    console.log(`✅ Created new wager: ${wager.name} (ID: ${wager.id})`);
+    const wagerRequest = {
+      ...request,
+      side_1_wallet_address: side1Wallet.publicKey.toString(),
+      side_2_wallet_address: side2Wallet.publicKey.toString(),
+    };
+
+    const wager = await createWagerInDB(wagerRequest);
 
     return {
       success: true,
@@ -194,8 +170,6 @@ export function validateWagerEndTime(dateTimeString: string): {
   parsedDate?: Date;
 } {
   try {
-    // Parse the date string (format: MM-DD-YY HHMM AM/PM)
-    // Example: "5-23-25 10pm" -> May 23, 2025 10:00 PM
     const parsedDate = new Date(dateTimeString);
 
     if (isNaN(parsedDate.getTime())) {
@@ -223,132 +197,5 @@ export function validateWagerEndTime(dateTimeString: string): {
       isValid: false,
       error: "Invalid date format. Please type like this: MM-DD-YY HHMM AM/PM",
     };
-  }
-}
-
-// Database functions
-async function createWagerInDB(request: CreateWagerRequest): Promise<Wager> {
-  const dbConnection = await getConnection();
-
-  try {
-    // First, ensure the wagers table exists
-    await dbConnection.execute(`
-      CREATE TABLE IF NOT EXISTS wagers (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        creator_telegram_user_id BIGINT NOT NULL,
-        category VARCHAR(50) NOT NULL,
-        name VARCHAR(100) NOT NULL,
-        description TEXT NOT NULL,
-        image_url VARCHAR(500),
-        side_1 VARCHAR(50) NOT NULL,
-        side_2 VARCHAR(50) NOT NULL,
-        wager_end_time DATETIME NOT NULL,
-        wager_type ENUM('private', 'public') NOT NULL DEFAULT 'public',
-        status ENUM('active', 'ended', 'cancelled') NOT NULL DEFAULT 'active',
-        total_pool_amount DECIMAL(20, 9) DEFAULT 0,
-        winning_side ENUM('side_1', 'side_2') NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        
-        INDEX idx_creator (creator_telegram_user_id),
-        INDEX idx_category (category),
-        INDEX idx_status (status),
-        INDEX idx_wager_end_time (wager_end_time),
-        INDEX idx_created_at (created_at)
-      )
-    `);
-
-    const [result] = await dbConnection.execute(
-      `INSERT INTO wagers (
-        creator_telegram_user_id, 
-        category, 
-        name, 
-        description, 
-        image_url, 
-        side_1, 
-        side_2, 
-        wager_end_time, 
-        wager_type, 
-        status,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
-      [
-        request.creator_telegram_user_id,
-        request.category,
-        request.name,
-        request.description,
-        request.image_url || null,
-        request.side_1,
-        request.side_2,
-        request.wager_end_time,
-        request.wager_type,
-      ]
-    );
-
-    const insertResult = result as mysql.ResultSetHeader;
-    const wagerId = insertResult.insertId;
-
-    // Fetch the created wager
-    const [rows] = await dbConnection.execute(
-      "SELECT * FROM wagers WHERE id = ?",
-      [wagerId]
-    );
-
-    const wagers = rows as Wager[];
-    return wagers[0];
-  } catch (error) {
-    console.error("Error creating wager:", error);
-    throw error;
-  }
-}
-
-async function getAllWagersFromDB(): Promise<Wager[]> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(`
-      SELECT * FROM wagers 
-      WHERE status = 'active'
-      ORDER BY created_at DESC
-    `);
-
-    return rows as Wager[];
-  } catch (error) {
-    console.error("Error getting all wagers:", error);
-    throw error;
-  }
-}
-
-async function getWagerByIdFromDB(wagerId: number): Promise<Wager | null> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(
-      "SELECT * FROM wagers WHERE id = ?",
-      [wagerId]
-    );
-
-    const wagers = rows as Wager[];
-    return wagers.length > 0 ? wagers[0] : null;
-  } catch (error) {
-    console.error("Error getting wager by ID:", error);
-    throw error;
-  }
-}
-
-async function getWagersByCategoryFromDB(category: string): Promise<Wager[]> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(
-      "SELECT * FROM wagers WHERE category = ? AND status = 'active' ORDER BY created_at DESC",
-      [category]
-    );
-
-    return rows as Wager[];
-  } catch (error) {
-    console.error("Error getting wagers by category:", error);
-    throw error;
   }
 }

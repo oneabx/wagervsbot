@@ -3,8 +3,8 @@ import {
   validateWagerEndTime,
   WAGER_CATEGORIES,
   WAGER_TYPES,
-  CreateWagerRequest,
 } from "../controllers/WagerController";
+import { CreateWagerRequest } from "../models/WagerModel";
 
 export interface WagerCreationState {
   telegramUserId: number;
@@ -24,7 +24,6 @@ export type WagerCreationStep =
   | "reviewing"
   | "completed";
 
-// In-memory storage for wager creation states (in production, use Redis or database)
 const wagerCreationStates = new Map<number, WagerCreationState>();
 
 export function initializeWagerCreation(
@@ -298,24 +297,19 @@ function processImageEntry(
   state?: WagerCreationState;
 } {
   const imageInput = userInput.trim();
-  let image_url: string | undefined;
+  let image_file_id: string | undefined;
 
   if (imageInput.toLowerCase() === "/no") {
-    image_url = undefined;
+    image_file_id = undefined;
   } else if (imageInput.startsWith("http")) {
-    // Accept any HTTP URL (including Telegram file URLs)
-    image_url = imageInput;
+    image_file_id = imageInput;
   } else {
-    return {
-      success: false,
-      message:
-        "Please provide a valid image URL starting with 'http' or type '/no' to skip.",
-    };
+    image_file_id = imageInput;
   }
 
   const updatedState = updateWagerCreationState(state.telegramUserId, {
     step: "entering_end_time",
-    data: { ...state.data, image_url },
+    data: { ...state.data, image_file_id },
   });
 
   return {
@@ -370,7 +364,7 @@ function generateWagerReviewMessage(state: WagerCreationState): string {
 📝 **Description:** ${data.description}
 ⚔️ **Side 1:** ${data.side_1}
 ⚔️ **Side 2:** ${data.side_2}
-🖼️ **Image:** ${data.image_url ? "Yes" : "No"}
+🖼️ **Image:** ${data.image_file_id ? "Yes" : "No"}
 ⏰ **End Time:** ${data.wager_end_time?.toLocaleString()}
 🎯 **Type:** ${data.wager_type}
 

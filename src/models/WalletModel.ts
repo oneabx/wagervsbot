@@ -61,6 +61,28 @@ export async function getBalance(
   }
 }
 
+export async function getWalletByTelegramId(
+  telegramUserId: number
+): Promise<{ wallet_public_key: string; wallet_private_key: string } | null> {
+  const dbConnection = await getConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT wallet_public_key, wallet_private_key FROM wallets WHERE telegram_user_id = ?",
+      [telegramUserId]
+    );
+
+    const wallets = rows as {
+      wallet_public_key: string;
+      wallet_private_key: string;
+    }[];
+    return wallets.length > 0 ? wallets[0] : null;
+  } catch (error) {
+    console.error("Error getting wallet by telegram ID:", error);
+    throw error;
+  }
+}
+
 export async function walletExists(telegramUserId: number): Promise<boolean> {
   const dbConnection = await getConnection();
 
@@ -89,10 +111,6 @@ export async function updateWalletBalance(
     await dbConnection.execute(
       "UPDATE wallets SET sol_amount = ?, vs_token_amount = ?, updated_at = NOW() WHERE telegram_user_id = ?",
       [solAmount, vsTokenAmount, telegramUserId]
-    );
-
-    console.log(
-      `Updated wallet balance for user ${telegramUserId}: SOL=${solAmount}, VS=${vsTokenAmount}`
     );
   } catch (error) {
     console.error("Error updating wallet balance:", error);

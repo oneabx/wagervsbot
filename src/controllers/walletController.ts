@@ -3,6 +3,7 @@ import {
   getBalance,
   walletExists as walletExistsModel,
   getAllWallets,
+  getWalletByTelegramId as getWalletByTelegramIdModel,
 } from "../models/WalletModel";
 import {
   createWallet as createSolanaWallet,
@@ -72,6 +73,20 @@ export async function walletExists(telegramUserId: number): Promise<boolean> {
   } catch (error) {
     console.error("Error checking wallet existence:", error);
     return false;
+  }
+}
+
+export async function getWalletByTelegramId(
+  telegramUserId: number
+): Promise<{ wallet_public_key: string; wallet_private_key: string } | null> {
+  try {
+    if (!telegramUserId || telegramUserId <= 0) {
+      return null;
+    }
+    return await getWalletByTelegramIdModel(telegramUserId);
+  } catch (error) {
+    console.error("Error getting wallet by telegram ID:", error);
+    return null;
   }
 }
 

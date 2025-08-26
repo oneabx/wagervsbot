@@ -1,10 +1,14 @@
 import TelegramBot = require("node-telegram-bot-api");
-import { isCommand } from "../utils/validation";
 import {
   createWallet,
   getWalletBalance,
   walletExists,
   buyTokens,
+  getWagers,
+  getWager,
+  transferVSTokenToSideWallet,
+  getTotalAmountBySide,
+  getWalletByTelegramId,
 } from "../controllers";
 import { calculatePaymentAmount } from "./PriceService";
 import {
@@ -13,7 +17,9 @@ import {
   finalizeWagerCreation,
   clearWagerCreationState,
   getCategoriesList,
+  getWagerCreationState,
 } from "./WagerCreationService";
+import { getVSTokenBalance } from "../services/TransferService";
 
 let bot: TelegramBot;
 
@@ -30,21 +36,21 @@ function setupEventHandlers(): void {
   bot.onText(/\/start/, handleStart);
   bot.onText(/\/help/, handleHelp);
   bot.onText(/\/balance/, handleBalance);
+  bot.onText(/\/token_balance/, handleTokenBalance);
   bot.onText(/\/createwallet/, handleCreateWallet);
   bot.onText(/\/buy (\d+) (sol|usdc)/, handleBuyTokens);
 
-  // Wager creation commands
   bot.onText(/\/createwager/, handleCreateWager);
   bot.onText(/\/private/, handlePrivateWager);
   bot.onText(/\/public/, handlePublicWager);
   bot.onText(/\/cancel/, handleCancelWager);
   bot.onText(/\/confirm/, handleConfirmWager);
 
-  // Handle inline button callbacks
+  bot.onText(/\/show_wagers/, handleShowWagers);
+
   bot.on("callback_query", handleCallbackQuery);
 
-  // Handle category selection and other wager creation steps
-  bot.on("message", handleWagerCreationMessage);
+  bot.on("message", handleMessage);
 }
 
 async function setupBotMenu(): Promise<void> {
@@ -59,28 +65,28 @@ async function setupBotMenu(): Promise<void> {
         description: "📖 Get help and instructions",
       },
       {
-        command: "balance",
-        description: "💰 Check your wallet balance",
-      },
-      {
         command: "createwallet",
         description: "🔐 Create a new Solana wallet",
       },
       {
+        command: "balance",
+        description: "💰 Check your wallet balance (database)",
+      },
+      {
+        command: "token_balance",
+        description: "🔗 Check your token balance",
+      },
+      {
         command: "buy",
-        description: "🪙 Buy VS tokens (amount currency)",
+        description: "🪙 Buy VS token (amount currency)",
       },
       {
         command: "createwager",
         description: "🎲 Create a new wager",
       },
       {
-        command: "private",
-        description: "🔒 Create private wager (FREE)",
-      },
-      {
-        command: "public",
-        description: "🌐 Create public wager (0.15 SOL)",
+        command: "show_wagers",
+        description: "📋 View all active wagers",
       },
     ]);
 
@@ -102,69 +108,72 @@ function handleStart(msg: TelegramBot.Message): void {
 
   const welcomeMessage = `Hello ${firstName}! 👋
 
-🪙 <b>VS Token Trading Bot</b>
+🎲 <b>Wager VS Bot</b>
 
-<b>Available Commands:</b>
-• /createwallet - Create a new Solana wallet
-• /balance - Check your wallet balance
-• /buy [amount] [currency] - Buy VS tokens
-• /createwager - Create a new wager
-• /help - Show help information
+<b>Main Commands:</b>
+• /createwager - Create a new wager (private or public)
+• /show_wagers - View all active wagers
+• /createwallet - Create a Solana wallet
+• /balance - Check your wallet balance (database)
+• /token_balance - Check your token balance
+• /buy [amount] [currency] - Buy VS token
+
+<b>Wager Types:</b>
+• 🔒 Private: FREE - Settle disputes between friends
+• 🌐 Public: 0.15 SOL - Public to all users
 
 <b>Supported Currencies:</b>
-• SOL - Solana
-• USDC - USD Coin
+• SOL - Solana (dynamic pricing)
+• USDC - USD Coin (1:1 USD)
 
-💰 <b>VS Token Price:</b> $0.000002 USD (2×10⁻⁶)
+💰 <b>VS Token Price:</b> $0.000002 USD
 
-🎲 <b>Wager System:</b>
-• Private wagers: FREE
-• Public wagers: 0.15 SOL
-
-Ready to start trading VS tokens and creating wagers!`;
+Type /help for detailed instructions!`;
 
   bot.sendMessage(chatId, welcomeMessage, {
     parse_mode: "HTML",
   });
 }
 
-function handleHelp(msg: TelegramBot.Message): void {
+async function handleHelp(msg: TelegramBot.Message): Promise<void> {
   const chatId = msg.chat.id;
 
-  const helpMessage = `📖 <b>VS Token Trading Bot Help</b>
+  const helpMessage = `🤖 <b>Wager Bot Help</b>
 
-<b>Getting Started:</b>
+<b>Available Commands:</b>
+• /start - Start the bot and see available commands
+• /help - Get help and instructions
+• /show_wagers - View all active wagers
+• /createwallet - Create a Solana wallet
+• /balance - Check your wallet balance (database)
+• /token_balance - Check your token balance
+• /buy [amount] [currency] - Buy VS token
+
+<b>Wager Commands:</b>
+• /createwager - Create a new wager
+• /private - Create a private wager
+• /public - Create a public wager
+• /cancel - Cancel wager creation
+• /confirm - Confirm and save wager
+
+<b>How to Use:</b>
 1. Create a wallet with /createwallet
-2. Check your balance with /balance
-3. Buy VS tokens with /buy
+2. Buy VS token with /buy [amount] [currency]
+3. Create wagers with /createwager
+4. View wagers with /show_wagers
+5. Place bets by clicking side buttons
 
-<b>Buy Command Format:</b>
-/buy [token_amount] [currency]
-
-<b>Examples:</b>
-• /buy 100000 sol - Buy 100,000 VS tokens with SOL
-• /buy 50000 usdc - Buy 50,000 VS tokens with USDC
-
-<b>Token Information:</b>
-• Price: $0.000002 USD per VS token (2×10⁻⁶)
-• Real-time SOL prices from CoinGecko
-• USDC payments at 1:1 USD ratio
+<b>Pool Amounts:</b>
+💰 Pool amounts show real VS token balances
+🔗 Use /token_balance to check your actual token balance
 
 <b>Supported Currencies:</b>
-• SOL - Solana (dynamic pricing)
-• USDC - USD Coin (1:1 USD)
+• SOL - Solana
+• USDC - USD Coin
 
-<b>Features:</b>
-• ✅ Real-time balance monitoring
-• ✅ Automatic payment calculation
-• ✅ Secure Solana transactions
-• ✅ Live price updates
+Need help? Contact support!`;
 
-Need more help? Contact support!`;
-
-  bot.sendMessage(chatId, helpMessage, {
-    parse_mode: "HTML",
-  });
+  bot.sendMessage(chatId, helpMessage, { parse_mode: "HTML" });
 }
 
 async function handleBalance(msg: TelegramBot.Message): Promise<void> {
@@ -184,7 +193,7 @@ async function handleBalance(msg: TelegramBot.Message): Promise<void> {
       const vsTokenAmount = Number(balanceResponse.vs_token_amount || 0);
 
       const message =
-        `💰 <b>Wallet Balance</b>\n\n` +
+        `💰 <b>Wallet Balance (Database)</b>\n\n` +
         `SOL: <b>${solAmount.toFixed(9)}</b>\n` +
         `VS Token: <b>${vsTokenAmount.toFixed(9)}</b>`;
 
@@ -198,6 +207,49 @@ async function handleBalance(msg: TelegramBot.Message): Promise<void> {
   } catch (error) {
     console.error("Error handling balance command:", error);
     bot.sendMessage(chatId, "❌ Error retrieving wallet balance");
+  }
+}
+
+async function handleTokenBalance(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+  const telegramUserId = msg.from?.id;
+
+  if (!telegramUserId) {
+    bot.sendMessage(chatId, "❌ Unable to identify user");
+    return;
+  }
+
+  try {
+    const wallet = await getWalletByTelegramId(telegramUserId);
+
+    if (!wallet) {
+      bot.sendMessage(
+        chatId,
+        "❌ No wallet found. Use /createwallet to create one."
+      );
+      return;
+    }
+
+    const vsTokenBalance = await getVSTokenBalance(wallet.wallet_public_key);
+
+    if (vsTokenBalance.success) {
+      const message =
+        `🔗 <b>Token Balance</b>\n\n` +
+        `VS Token: <b>${vsTokenBalance.balance!.toFixed(9)}</b>\n\n` +
+        `💡 <i>This shows your actual VS token balance.</i>`;
+
+      bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+    } else {
+      const message =
+        `🔗 <b>Token Balance</b>\n\n` +
+        `VS Token: <b>0.000000000</b>\n\n` +
+        `💡 <i>No VS token account found. You need to buy VS token first.</i>`;
+
+      bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+    }
+  } catch (error) {
+    console.error("Error handling token balance command:", error);
+    bot.sendMessage(chatId, "❌ Error retrieving token balance");
   }
 }
 
@@ -311,7 +363,7 @@ async function handleBuyTokens(
   const processingMessage = await bot.sendMessage(
     chatId,
     `⏳ <b>Processing transaction...</b>\n\n` +
-      `🪙 Amount: ${vsTokenAmount.toLocaleString()} VS Tokens\n` +
+      `🪙 Amount: ${vsTokenAmount.toLocaleString()} VS token\n` +
       priceInfo +
       `💳 Payment: ${paymentAmount.toFixed(
         6
@@ -340,13 +392,13 @@ async function handleBuyTokens(
 
       const successMessage =
         `✅ <b>VS Token Purchase Completed!</b>\n\n` +
-        `🪙 Amount: <b>${vsTokenAmount.toLocaleString()} VS Tokens</b>\n` +
+        `🪙 Amount: <b>${vsTokenAmount.toLocaleString()} VS token</b>\n` +
         successPriceInfo +
         `💳 Payment: <b>${paymentAmount.toFixed(
           6
         )} ${paymentCurrency.toUpperCase()}</b>\n\n` +
         `🎉 <b>Transaction successful!</b>\n` +
-        `Your VS tokens have been sent to your wallet.\n\n` +
+        `Your VS token has been sent to your wallet.\n\n` +
         `💼 Wallet: <code>${buyResponse.data.user_wallet}</code>`;
 
       await bot.editMessageText(successMessage, {
@@ -498,31 +550,448 @@ async function handleConfirmWager(msg: TelegramBot.Message): Promise<void> {
   }
 }
 
+async function handleMessage(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+  const telegramUserId = msg.from?.id;
+  const text = msg.text;
+
+  if (!telegramUserId || !text) {
+    return;
+  }
+
+  // Check if user is in betting state first (highest priority)
+  const bettingState = getBettingState(telegramUserId);
+  if (bettingState) {
+    await handleBettingMessage(msg);
+    return;
+  }
+
+  // Check if user is in wager creation state
+  const wagerState = getWagerCreationState(telegramUserId);
+  if (wagerState) {
+    await handleWagerCreationMessage(msg);
+    return;
+  }
+
+  // If not in any state and it's not a command, ignore the message
+  // This prevents unwanted processing of random text
+  if (!text.startsWith("/")) {
+    return;
+  }
+}
+
+// Handle show wagers command
+async function handleShowWagers(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+
+  try {
+    const result = await getWagers();
+
+    if (!result.success) {
+      bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+      return;
+    }
+
+    const wagers = result.data || [];
+
+    if (wagers.length === 0) {
+      bot.sendMessage(chatId, "📭 No active wagers found.");
+      return;
+    }
+
+    // Create inline keyboard with wager buttons
+    const inlineKeyboard = {
+      inline_keyboard: wagers.map((wager: any) => [
+        {
+          text: `🎲 ${wager.name} (${wager.category})`,
+          callback_data: `view_wager_${wager.id}`,
+        },
+      ]),
+    };
+
+    const message = `📋 **Active Wagers** (${wagers.length} total)
+
+Click on a wager to view details:`;
+
+    bot.sendMessage(chatId, message, {
+      parse_mode: "Markdown",
+      reply_markup: inlineKeyboard,
+    });
+  } catch (error) {
+    console.error("Error showing wagers:", error);
+    bot.sendMessage(chatId, "❌ An error occurred while fetching wagers.");
+  }
+}
+
+// Handle wager view callback
+async function handleWagerView(
+  callbackQuery: TelegramBot.CallbackQuery
+): Promise<void> {
+  const chatId = callbackQuery.message?.chat.id;
+  const data = callbackQuery.data;
+
+  if (!chatId || !data) {
+    return;
+  }
+
+  try {
+    // Answer the callback query to remove loading state
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    // Extract wager ID from callback data
+    const wagerId = parseInt(data.replace("view_wager_", ""));
+
+    if (isNaN(wagerId)) {
+      bot.sendMessage(chatId, "❌ Invalid wager ID.");
+      return;
+    }
+
+    const result = await getWager(wagerId);
+
+    if (!result.success) {
+      bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+      return;
+    }
+
+    const wager = result.data;
+
+    // Get real-time pool amounts for both sides
+    const side1Amount = await getTotalAmountBySide(wager.id, "side_1");
+    const side2Amount = await getTotalAmountBySide(wager.id, "side_2");
+    const totalPoolAmount = side1Amount + side2Amount;
+
+    // Create wager details message
+    const wagerMessage = `🎲 <b>${wager.name}</b>
+
+📂 <b>Category:</b> ${wager.category}
+📝 <b>Description:</b> ${wager.description}
+🎯 <b>Type:</b> ${wager.wager_type === "private" ? "🔒 Private" : "🌐 Public"}
+⏰ <b>Ends:</b> ${new Date(wager.wager_end_time).toLocaleString()}
+💰 <b>Total Pool:</b> ${totalPoolAmount} VS token
+📊 <b>Side 1 Pool:</b> ${side1Amount} VS token
+📊 <b>Side 2 Pool:</b> ${side2Amount} VS token
+📊 <b>Status:</b> ${wager.status}
+🆔 <b>ID:</b> ${wager.id}
+
+<b>Transfer VS token to place your bet:</b>`;
+
+    // Create inline keyboard for betting
+    const bettingKeyboard = {
+      inline_keyboard: [
+        [
+          {
+            text: `🎯 ${wager.side_1}`,
+            callback_data: `bet_side1_${wager.id}`,
+          },
+          {
+            text: `🎯 ${wager.side_2}`,
+            callback_data: `bet_side2_${wager.id}`,
+          },
+        ],
+      ],
+    };
+
+    // Send wager details
+    if (wager.image_file_id) {
+      console.log(
+        `Attempting to display image with file_id: ${wager.image_file_id}`
+      );
+
+      try {
+        // Use file_id directly for sending photo
+        await bot.sendPhoto(chatId, wager.image_file_id, {
+          caption: wagerMessage,
+          parse_mode: "HTML",
+          reply_markup: bettingKeyboard,
+        });
+      } catch (photoError) {
+        console.error("Error sending photo with file_id:", photoError);
+
+        // Fallback to text-only
+        bot.sendMessage(chatId, wagerMessage, {
+          parse_mode: "HTML",
+          reply_markup: bettingKeyboard,
+        });
+      }
+    } else {
+      // Send without image
+      console.log("No image file_id found, sending text-only");
+      bot.sendMessage(chatId, wagerMessage, {
+        parse_mode: "HTML",
+        reply_markup: bettingKeyboard,
+      });
+    }
+  } catch (error: any) {
+    console.error("Error viewing wager:", error);
+
+    // Send a more specific error message based on the error type
+    if (error.message && error.message.includes("400")) {
+      bot.sendMessage(
+        chatId,
+        "❌ Error: Invalid image URL in wager. Showing text-only version."
+      );
+    } else {
+      bot.sendMessage(chatId, "❌ An error occurred while viewing the wager.");
+    }
+  }
+}
+
+// Helper function to validate and clean image URLs
+function isValidImageUrl(url: string): boolean {
+  if (!url || url.trim() === "") {
+    return false;
+  }
+
+  try {
+    // Check if it's a valid URL
+    const urlObj = new URL(url);
+
+    // Check if it's an HTTP/HTTPS URL
+    if (!urlObj.protocol.startsWith("http")) {
+      return false;
+    }
+
+    // Accept any valid HTTP/HTTPS URL - let Telegram handle image validation
+    return true;
+  } catch (error) {
+    // If URL parsing fails, it's not a valid URL
+    return false;
+  }
+}
+
+// Helper function to clean image URL for display
+function cleanImageUrl(url: string): string | null {
+  if (!url || url.trim() === "") {
+    return null;
+  }
+
+  // Remove any whitespace
+  const cleanedUrl = url.trim();
+
+  // Check if it's a valid URL format
+  if (!isValidImageUrl(cleanedUrl)) {
+    return null;
+  }
+
+  return cleanedUrl;
+}
+
+// Helper function to check if URL is a Telegram file URL
+function isTelegramFileUrl(url: string): boolean {
+  try {
+    const urlObj = new URL(url);
+    return (
+      urlObj.hostname === "api.telegram.org" &&
+      urlObj.pathname.includes("/file/bot") &&
+      urlObj.pathname.includes("/photos/")
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+// In-memory storage for betting states
+interface BettingState {
+  telegramUserId: number;
+  wagerId: number;
+  side: "side_1" | "side_2";
+  sideName: string;
+}
+
+const bettingStates = new Map<number, BettingState>();
+
+// Betting state management functions
+function setBettingState(telegramUserId: number, state: BettingState): void {
+  bettingStates.set(telegramUserId, state);
+}
+
+function getBettingState(telegramUserId: number): BettingState | null {
+  return bettingStates.get(telegramUserId) || null;
+}
+
+function clearBettingState(telegramUserId: number): void {
+  bettingStates.delete(telegramUserId);
+}
+
+// Handle betting callback queries
+async function handleBettingCallback(
+  callbackQuery: TelegramBot.CallbackQuery
+): Promise<void> {
+  const chatId = callbackQuery.message?.chat.id;
+  const data = callbackQuery.data;
+  const telegramUserId = callbackQuery.from?.id;
+
+  if (!chatId || !data || !telegramUserId) {
+    return;
+  }
+
+  try {
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data.startsWith("bet_side1_") || data.startsWith("bet_side2_")) {
+      const wagerId = parseInt(
+        data.replace("bet_side1_", "").replace("bet_side2_", "")
+      );
+      const side = data.startsWith("bet_side1_") ? "side_1" : "side_2";
+
+      if (isNaN(wagerId)) {
+        bot.sendMessage(chatId, "❌ Invalid wager ID.");
+        return;
+      }
+
+      // Get wager details
+      const result = await getWager(wagerId);
+      if (!result.success) {
+        bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+        return;
+      }
+
+      const wager = result.data;
+      const sideName = side === "side_1" ? wager.side_1 : wager.side_2;
+
+      // Set betting state
+      setBettingState(telegramUserId, {
+        telegramUserId,
+        wagerId,
+        side,
+        sideName,
+      });
+
+      bot.sendMessage(
+        chatId,
+        `🎯 <b>Betting on: ${sideName}</b>\n\n💰 Enter the amount of VS token you want to transfer:`,
+        { parse_mode: "HTML" }
+      );
+    }
+  } catch (error) {
+    console.error("Error handling betting callback:", error);
+    bot.sendMessage(chatId, "❌ An error occurred while processing your bet.");
+  }
+}
+
+// Handle betting amount input
+async function handleBettingMessage(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+  const telegramUserId = msg.from?.id;
+  const text = msg.text;
+
+  if (!telegramUserId || !text) {
+    return;
+  }
+
+  // Check if user is in betting state
+  const bettingState = getBettingState(telegramUserId);
+  if (!bettingState) {
+    return; // Not in betting state, let other handlers process
+  }
+
+  // Check if it's a command (skip betting processing for commands)
+  if (text.startsWith("/")) {
+    return;
+  }
+
+  try {
+    const amount = parseFloat(text);
+
+    if (isNaN(amount) || amount <= 0) {
+      bot.sendMessage(
+        chatId,
+        "❌ Please enter a valid positive number for VS token."
+      );
+      return;
+    }
+
+    // Get wager details to get the wallet address
+    const wagerResult = await getWager(bettingState.wagerId);
+    if (!wagerResult.success) {
+      bot.sendMessage(
+        chatId,
+        `❌ Failed to get wager details: ${wagerResult.error}`
+      );
+      clearBettingState(telegramUserId);
+      return;
+    }
+
+    const wager = wagerResult.data;
+    const walletAddress =
+      bettingState.side === "side_1"
+        ? wager.side_1_wallet_address
+        : wager.side_2_wallet_address;
+
+    // Transfer VS token to side wallet
+    const transferResult = await transferVSTokenToSideWallet({
+      wagerId: bettingState.wagerId,
+      userTelegramId: telegramUserId,
+      side: bettingState.side,
+      walletAddress: walletAddress,
+      amount: amount,
+    });
+
+    if (!transferResult.success) {
+      bot.sendMessage(
+        chatId,
+        `❌ Failed to transfer VS token: ${transferResult.error}`
+      );
+      clearBettingState(telegramUserId);
+      return;
+    }
+
+    // Get updated pool amounts
+    const updatedSide1Amount = await getTotalAmountBySide(
+      bettingState.wagerId,
+      "side_1"
+    );
+    const updatedSide2Amount = await getTotalAmountBySide(
+      bettingState.wagerId,
+      "side_2"
+    );
+    const updatedTotalPoolAmount = updatedSide1Amount + updatedSide2Amount;
+
+    const message = `✅ <b>VS Token Transfer Successful!</b>
+
+🎯 <b>Side:</b> ${bettingState.sideName}
+💰 <b>Amount:</b> ${amount} VS token
+🎲 <b>Wager ID:</b> ${bettingState.wagerId}
+🏆 <b>Transaction ID:</b> ${transferResult.data.transaction.id}
+🔗 <b>Solana TX:</b> ${transferResult.data.transactionHash}
+🏦 <b>Wallet:</b> ${walletAddress}
+💳 <b>New Balance:</b> ${transferResult.data.newUserBalance} VS token
+
+💰 <b>Updated Pool:</b> ${updatedTotalPoolAmount} VS token
+📊 <b>Side 1:</b> ${updatedSide1Amount} VS token
+📊 <b>Side 2:</b> ${updatedSide2Amount} VS token
+
+Your VS token has been transferred to the side wallet!`;
+
+    bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+
+    // Clear betting state
+    clearBettingState(telegramUserId);
+  } catch (error) {
+    console.error("Error processing betting amount:", error);
+    bot.sendMessage(chatId, "❌ An error occurred while processing your bet.");
+    clearBettingState(telegramUserId);
+  }
+}
+
+// Handle wager creation messages
 async function handleWagerCreationMessage(
   msg: TelegramBot.Message
 ): Promise<void> {
   const chatId = msg.chat.id;
   const telegramUserId = msg.from?.id;
-  const messageText = msg.text;
-  const photo = msg.photo;
+  const text = msg.text;
 
-  if (!telegramUserId) {
+  if (!telegramUserId || !text) {
     return;
   }
 
   // Handle photo messages (images)
-  if (photo && photo.length > 0) {
+  if (msg.photo && msg.photo.length > 0) {
     try {
-      // Get the largest photo (best quality)
-      const largestPhoto = photo[photo.length - 1];
+      const largestPhoto = msg.photo[msg.photo.length - 1];
       const fileId = largestPhoto.file_id;
-
-      // Get file info to get the file path
-      const file = await bot.getFile(fileId);
-      const imageUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-
-      // Process the image URL in wager creation
-      const result = await processWagerCreationStep(telegramUserId, imageUrl);
+      const result = await processWagerCreationStep(telegramUserId, fileId);
 
       if (result.success) {
         bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
@@ -539,24 +1008,14 @@ async function handleWagerCreationMessage(
     return;
   }
 
-  // Handle text messages
-  if (!messageText) {
-    return;
-  }
-
-  // Check if this is a category command (like /Crypto, /NBA, etc.)
-  const categoryMatch = messageText.match(
+  // Check if this is a category command
+  const categoryMatch = text.match(
     /^\/(Crypto|EuFootball|Finance|Golf|IPL|MLB|NBA|NHL|Politics|UFC)$/i
   );
 
   if (categoryMatch) {
-    // Process category selection
     try {
-      const result = await processWagerCreationStep(
-        telegramUserId,
-        messageText
-      );
-
+      const result = await processWagerCreationStep(telegramUserId, text);
       if (result.success) {
         bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
       } else {
@@ -570,14 +1029,12 @@ async function handleWagerCreationMessage(
   }
 
   // Skip if it's any other command
-  if (messageText.startsWith("/")) {
+  if (text.startsWith("/")) {
     return;
   }
 
   try {
-    // Process wager creation step
-    const result = await processWagerCreationStep(telegramUserId, messageText);
-
+    const result = await processWagerCreationStep(telegramUserId, text);
     if (result.success) {
       bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
     } else {
@@ -585,56 +1042,60 @@ async function handleWagerCreationMessage(
     }
   } catch (error) {
     console.error("Error processing wager creation step:", error);
-    // Don't reply here to avoid spam
   }
 }
 
-// Handle inline button callbacks
+// Update the main callback query handler to include betting
 async function handleCallbackQuery(
   callbackQuery: TelegramBot.CallbackQuery
 ): Promise<void> {
-  const chatId = callbackQuery.message?.chat.id;
-  const telegramUserId = callbackQuery.from?.id;
   const data = callbackQuery.data;
 
-  if (!chatId || !telegramUserId || !data) {
+  if (!data) {
     return;
   }
 
-  try {
-    // Answer the callback query to remove loading state
-    await bot.answerCallbackQuery(callbackQuery.id);
+  // Handle betting callbacks
+  if (data.startsWith("bet_side1_") || data.startsWith("bet_side2_")) {
+    await handleBettingCallback(callbackQuery);
+    return;
+  }
 
-    if (data === "wager_private") {
-      // Initialize wager creation for private type
-      initializeWagerCreation(telegramUserId, "private");
+  // Handle wager viewing callbacks
+  if (data.startsWith("view_wager_")) {
+    await handleWagerView(callbackQuery);
+    return;
+  }
 
-      const message = `✅ **Private Wager Selected**
+  // Handle wager creation callbacks
+  if (data === "wager_private" || data === "wager_public") {
+    const chatId = callbackQuery.message?.chat.id;
+    const telegramUserId = callbackQuery.from?.id;
 
-Choose a category for your wager:
-
-${getCategoriesList()}
-
-Type the category (e.g., /Crypto, /NBA) or /cancel to stop.`;
-
-      bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
-    } else if (data === "wager_public") {
-      // Initialize wager creation for public type
-      initializeWagerCreation(telegramUserId, "public");
-
-      const message = `✅ **Public Wager Selected** (0.15 SOL)
-
-Choose a category for your wager:
-
-${getCategoriesList()}
-
-Type the category (e.g., /Crypto, /NBA) or /cancel to stop.`;
-
-      bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+    if (!chatId || !telegramUserId) {
+      return;
     }
-  } catch (error) {
-    console.error("Error handling callback query:", error);
-    bot.sendMessage(chatId, "❌ An error occurred. Please try again.");
+
+    try {
+      await bot.answerCallbackQuery(callbackQuery.id);
+
+      const wagerType = data === "wager_private" ? "private" : "public";
+      const state = initializeWagerCreation(telegramUserId, wagerType);
+
+      const message = `🎲 <b>Creating ${wagerType} wager...</b>
+
+📂 <b>Choose a category:</b>
+
+${getCategoriesList()}`;
+
+      bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+    } catch (error) {
+      console.error("Error handling wager creation callback:", error);
+      bot.sendMessage(
+        chatId,
+        "❌ An error occurred while starting wager creation."
+      );
+    }
   }
 }
 

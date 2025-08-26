@@ -71,7 +71,6 @@ export async function transferSOL(
       return { success: false, error: "Amount must be greater than 0" };
     }
 
-    // Validate amount is a reasonable number
     if (!Number.isFinite(amount) || amount > 1000000) {
       return { success: false, error: "Invalid amount specified" };
     }
@@ -124,7 +123,6 @@ export async function transferUSDC(
       return { success: false, error: "Amount must be greater than 0" };
     }
 
-    // Validate amount is a reasonable number
     if (!Number.isFinite(amount) || amount > 1000000000) {
       return { success: false, error: "Invalid amount specified" };
     }
@@ -189,6 +187,188 @@ export async function transferUSDC(
   }
 }
 
+export async function getVSTokenBalance(
+  walletPublicKey: string
+): Promise<{ success: boolean; balance?: number; error?: string }> {
+  try {
+    const connection = getConnection();
+    const walletPubkey = new PublicKey(walletPublicKey);
+    const vsTokenMint = new PublicKey(VS_TOKEN_MINT_ADDRESS);
+
+    const tokenAccount = await getAssociatedTokenAddress(
+      vsTokenMint,
+      walletPubkey
+    );
+
+    try {
+      const accountInfo = await connection.getTokenAccountBalance(tokenAccount);
+      const balance = Number(accountInfo.value.amount) / TOKEN_MULTIPLIER;
+
+      return {
+        success: true,
+        balance: balance,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: "No VS token account found",
+      };
+    }
+  } catch (error: any) {
+    console.error("Error getting VS token balance:", error);
+    return {
+      success: false,
+      error: error.message || "Failed to get VS token balance",
+    };
+  }
+}
+
+export async function getSideWalletVSTokenBalance(
+  sideWalletAddress: string
+): Promise<number> {
+  try {
+    const balanceResult = await getVSTokenBalance(sideWalletAddress);
+    if (balanceResult.success) {
+      return balanceResult.balance!;
+    } else {
+      console.log(
+        `No VS token account found for side wallet: ${sideWalletAddress}`
+      );
+      return 0;
+    }
+  } catch (error) {
+    console.error("Error getting side wallet VS token balance:", error);
+    return 0;
+  }
+}
+
+export async function transferVSTokensFromUser(
+  fromPrivateKey: string,
+  toPublicKey: string,
+  amount: number
+): Promise<TransferResult> {
+  try {
+    if (amount <= 0) {
+      return { success: false, error: "Amount must be greater than 0" };
+    }
+
+    if (!Number.isFinite(amount) || amount > 1000000000) {
+      return { success: false, error: "Invalid amount specified" };
+    }
+
+    const tokenAmount = Math.floor(amount * TOKEN_MULTIPLIER);
+    console.log(
+      `🔢 Converting ${amount} VS token to ${tokenAmount} token units`
+    );
+
+    const connection = getConnection();
+    const fromKeypair = keypairFromBase64(fromPrivateKey);
+    const toPubkey = new PublicKey(toPublicKey);
+    const vsTokenMint = new PublicKey(VS_TOKEN_MINT_ADDRESS);
+
+    console.log(`🔍 Checking token accounts...`);
+    console.log(`From wallet: ${fromKeypair.publicKey.toString()}`);
+    console.log(`To wallet: ${toPubkey.toString()}`);
+    console.log(`VS Token Mint: ${vsTokenMint.toString()}`);
+
+    const fromTokenAccount = await getAssociatedTokenAddress(
+      vsTokenMint,
+      fromKeypair.publicKey
+    );
+    const toTokenAccount = await getAssociatedTokenAddress(
+      vsTokenMint,
+      toPubkey
+    );
+
+    console.log(`From token account: ${fromTokenAccount.toString()}`);
+    console.log(`To token account: ${toTokenAccount.toString()}`);
+
+    const transaction = new Transaction();
+
+    try {
+      const fromAccountInfo = await connection.getAccountInfo(fromTokenAccount);
+      if (!fromAccountInfo) {
+        console.log(
+          `❌ From token account does not exist: ${fromTokenAccount.toString()}`
+        );
+        return {
+          success: false,
+          error:
+            "Your wallet does not have VS token. Please buy VS token first.",
+        };
+      }
+      console.log(`✅ From token account exists`);
+    } catch (error) {
+      console.log(`❌ Error checking from token account: ${error}`);
+      return {
+        success: false,
+        error: "Your wallet does not have VS token. Please buy VS token first.",
+      };
+    }
+
+    try {
+      const toAccountInfo = await connection.getAccountInfo(toTokenAccount);
+      if (!toAccountInfo) {
+        console.log(
+          `📝 Creating destination token account: ${toTokenAccount.toString()}`
+        );
+        const createAccountInstruction =
+          createAssociatedTokenAccountInstruction(
+            fromKeypair.publicKey,
+            toTokenAccount,
+            toPubkey,
+            vsTokenMint
+          );
+        transaction.add(createAccountInstruction);
+      } else {
+        console.log(`✅ Destination token account exists`);
+      }
+    } catch (error) {
+      console.log(
+        `📝 Creating destination token account (caught error): ${toTokenAccount.toString()}`
+      );
+      const createAccountInstruction = createAssociatedTokenAccountInstruction(
+        fromKeypair.publicKey,
+        toTokenAccount,
+        toPubkey,
+        vsTokenMint
+      );
+      transaction.add(createAccountInstruction);
+    }
+
+    const transferInstruction = createTransferInstruction(
+      fromTokenAccount,
+      toTokenAccount,
+      fromKeypair.publicKey,
+      tokenAmount
+    );
+
+    transaction.add(transferInstruction);
+
+    console.log(`🚀 Sending transaction...`);
+    const signature = await connection.sendTransaction(transaction, [
+      fromKeypair,
+    ]);
+
+    console.log(`⏳ Confirming transaction: ${signature}`);
+    await connection.confirmTransaction(signature, "confirmed");
+
+    console.log(`🪙 VS Token transfer from user successful: ${signature}`);
+    return { success: true, signature };
+  } catch (error: any) {
+    console.error("Error transferring VS token from user:", error);
+
+    if (error.logs) {
+      console.error("Transaction logs:", error.logs);
+    }
+
+    return {
+      success: false,
+      error: error.message || "VS token transfer failed",
+    };
+  }
+}
+
 export async function transferVSTokens(
   toPublicKey: string,
   amount: number
@@ -198,14 +378,13 @@ export async function transferVSTokens(
       return { success: false, error: "Amount must be greater than 0" };
     }
 
-    // Validate amount is a reasonable number
     if (!Number.isFinite(amount) || amount > 1000000000) {
       return { success: false, error: "Invalid amount specified" };
     }
 
     const tokenAmount = Math.floor(amount * TOKEN_MULTIPLIER);
     console.log(
-      `🔢 Converting ${amount} VS tokens to ${tokenAmount} token units`
+      `🔢 Converting ${amount} VS token to ${tokenAmount} token units`
     );
 
     const connection = getConnection();
@@ -260,7 +439,7 @@ export async function transferVSTokens(
     console.log(`🪙 VS Token transfer successful: ${signature}`);
     return { success: true, signature };
   } catch (error: any) {
-    console.error("Error transferring VS tokens:", error);
+    console.error("Error transferring VS token:", error);
     return {
       success: false,
       error: error.message || "VS token transfer failed",
@@ -320,7 +499,7 @@ export async function processTokenPurchase(
     }
 
     console.log(
-      `✅ Complete transaction successful: Payment ${paymentResult.signature}, Tokens ${tokenResult.signature}`
+      `✅ Complete transaction successful: Payment ${paymentResult.signature}, Token ${tokenResult.signature}`
     );
     return { success: true };
   } catch (error: any) {
