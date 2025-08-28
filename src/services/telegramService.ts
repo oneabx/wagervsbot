@@ -19,18 +19,19 @@ import {
   getCategoriesList,
   getWagerCreationState,
 } from "./WagerCreationService";
-import { getVSTokenBalance } from "../services/TransferService";
+import {
+  getVSTokenBalance,
+  transferVSTokens,
+} from "../services/TransferService";
+import { createDatabaseConnection } from "../config/database";
+import {
+  updateExpiredWagers,
+  getEndedWagersWithoutWinner,
+  updateWagerWinningSide,
+} from "../models/WagerModel";
+import { getAllUsers, getAllUsersWithWallets } from "../models/WalletModel";
 
 let bot: TelegramBot;
-
-export function initializeBot(token: string): void {
-  bot = new TelegramBot(token, { polling: true });
-  setupEventHandlers();
-  setupBotMenu();
-  console.log(
-    "Telegram bot is running (polling mode). Ready to receive messages!"
-  );
-}
 
 function setupEventHandlers(): void {
   bot.onText(/\/start/, handleStart);
@@ -47,6 +48,8 @@ function setupEventHandlers(): void {
   bot.onText(/\/confirm/, handleConfirmWager);
 
   bot.onText(/\/show_wagers/, handleShowWagers);
+  bot.onText(/\/check_winners/, handleCheckWinners);
+  bot.onText(/\/airdrop/, handleDailyAirdrop);
 
   bot.on("callback_query", handleCallbackQuery);
 
@@ -87,6 +90,14 @@ async function setupBotMenu(): Promise<void> {
       {
         command: "show_wagers",
         description: "📋 View all active wagers",
+      },
+      {
+        command: "check_winners",
+        description: "🏆 Check wagers needing winner determination",
+      },
+      {
+        command: "airdrop",
+        description: "🎁 Trigger daily airdrop (admin)",
       },
     ]);
 
@@ -555,7 +566,7 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
   const telegramUserId = msg.from?.id;
   const text = msg.text;
 
-  if (!telegramUserId || !text) {
+  if (!telegramUserId) {
     return;
   }
 
@@ -575,7 +586,7 @@ async function handleMessage(msg: TelegramBot.Message): Promise<void> {
 
   // If not in any state and it's not a command, ignore the message
   // This prevents unwanted processing of random text
-  if (!text.startsWith("/")) {
+  if (!text || !text.startsWith("/")) {
     return;
   }
 }
@@ -660,43 +671,61 @@ async function handleWagerView(
     const side2Amount = await getTotalAmountBySide(wager.id, "side_2");
     const totalPoolAmount = side1Amount + side2Amount;
 
+    // Check if wager has ended
+    const now = new Date();
+    const endTime = new Date(wager.wager_end_time);
+    const isExpired = endTime <= now;
+    const statusText = isExpired ? "🕐 Ended" : "🟢 Active";
+
+    // Check if winner has been determined
+    const winnerText = wager.winning_side
+      ? `🏆 <b>Winner:</b> ${
+          wager.winning_side === "side_1" ? wager.side_1 : wager.side_2
+        }`
+      : isExpired
+      ? "⏳ <b>Winner:</b> Pending determination"
+      : "";
+
     // Create wager details message
     const wagerMessage = `🎲 <b>${wager.name}</b>
 
 📂 <b>Category:</b> ${wager.category}
 📝 <b>Description:</b> ${wager.description}
 🎯 <b>Type:</b> ${wager.wager_type === "private" ? "🔒 Private" : "🌐 Public"}
-⏰ <b>Ends:</b> ${new Date(wager.wager_end_time).toLocaleString()}
+⏰ <b>Ends:</b> ${endTime.toLocaleString()}
 💰 <b>Total Pool:</b> ${totalPoolAmount} VS token
 📊 <b>Side 1 Pool:</b> ${side1Amount} VS token
 📊 <b>Side 2 Pool:</b> ${side2Amount} VS token
-📊 <b>Status:</b> ${wager.status}
+📊 <b>Status:</b> ${statusText}
 🆔 <b>ID:</b> ${wager.id}
+${winnerText ? `\n${winnerText}` : ""}
 
-<b>Transfer VS token to place your bet:</b>`;
+${
+  isExpired
+    ? "🕐 <b>This wager has ended. No more bets can be placed.</b>"
+    : "<b>Transfer VS token to place your bet:</b>"
+}`;
 
-    // Create inline keyboard for betting
-    const bettingKeyboard = {
-      inline_keyboard: [
-        [
-          {
-            text: `🎯 ${wager.side_1}`,
-            callback_data: `bet_side1_${wager.id}`,
-          },
-          {
-            text: `🎯 ${wager.side_2}`,
-            callback_data: `bet_side2_${wager.id}`,
-          },
-        ],
-      ],
-    };
+    // Create inline keyboard for betting (only if wager is active)
+    const bettingKeyboard = isExpired
+      ? undefined
+      : {
+          inline_keyboard: [
+            [
+              {
+                text: `🎯 ${wager.side_1}`,
+                callback_data: `bet_side1_${wager.id}`,
+              },
+              {
+                text: `🎯 ${wager.side_2}`,
+                callback_data: `bet_side2_${wager.id}`,
+              },
+            ],
+          ],
+        };
 
     // Send wager details
-    if (wager.image_file_id) {
-      console.log(
-        `Attempting to display image with file_id: ${wager.image_file_id}`
-      );
-
+    if (wager.image_file_id && isValidTelegramFileId(wager.image_file_id)) {
       try {
         // Use file_id directly for sending photo
         await bot.sendPhoto(chatId, wager.image_file_id, {
@@ -715,7 +744,6 @@ async function handleWagerView(
       }
     } else {
       // Send without image
-      console.log("No image file_id found, sending text-only");
       bot.sendMessage(chatId, wagerMessage, {
         parse_mode: "HTML",
         reply_markup: bettingKeyboard,
@@ -734,6 +762,17 @@ async function handleWagerView(
       bot.sendMessage(chatId, "❌ An error occurred while viewing the wager.");
     }
   }
+}
+
+// Helper function to validate Telegram file_id
+function isValidTelegramFileId(fileId: string): boolean {
+  if (!fileId || fileId.trim() === "") {
+    return false;
+  }
+
+  // Telegram file_ids are typically long strings with underscores
+  // They should be at least 20 characters and contain underscores
+  return fileId.length >= 20 && fileId.includes("_") && !fileId.includes(" ");
 }
 
 // Helper function to validate and clean image URLs
@@ -847,6 +886,19 @@ async function handleBettingCallback(
       }
 
       const wager = result.data;
+
+      // Check if wager has ended
+      const now = new Date();
+      const endTime = new Date(wager.wager_end_time);
+      if (endTime <= now) {
+        bot.sendMessage(
+          chatId,
+          "🕐 <b>This wager has ended. No more bets can be placed.</b>",
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
       const sideName = side === "side_1" ? wager.side_1 : wager.side_2;
 
       // Set betting state
@@ -913,6 +965,20 @@ async function handleBettingMessage(msg: TelegramBot.Message): Promise<void> {
     }
 
     const wager = wagerResult.data;
+
+    // Check if wager has ended
+    const now = new Date();
+    const endTime = new Date(wager.wager_end_time);
+    if (endTime <= now) {
+      bot.sendMessage(
+        chatId,
+        "🕐 <b>This wager has ended. No more bets can be placed.</b>",
+        { parse_mode: "HTML" }
+      );
+      clearBettingState(telegramUserId);
+      return;
+    }
+
     const walletAddress =
       bettingState.side === "side_1"
         ? wager.side_1_wallet_address
@@ -982,7 +1048,7 @@ async function handleWagerCreationMessage(
   const telegramUserId = msg.from?.id;
   const text = msg.text;
 
-  if (!telegramUserId || !text) {
+  if (!telegramUserId) {
     return;
   }
 
@@ -991,6 +1057,17 @@ async function handleWagerCreationMessage(
     try {
       const largestPhoto = msg.photo[msg.photo.length - 1];
       const fileId = largestPhoto.file_id;
+
+      // Validate the file_id with Telegram API
+      const fileInfo = await getFileInfo(fileId);
+      if (!fileInfo.success) {
+        bot.sendMessage(
+          chatId,
+          "❌ Invalid image file. Please try uploading again or type /no to skip."
+        );
+        return;
+      }
+
       const result = await processWagerCreationStep(telegramUserId, fileId);
 
       if (result.success) {
@@ -1005,6 +1082,116 @@ async function handleWagerCreationMessage(
         "❌ Error processing image. Please try again or type /no to skip."
       );
     }
+    return;
+  }
+
+  // Handle document uploads (images sent as files)
+  if (msg.document) {
+    try {
+      const fileId = msg.document.file_id;
+      const mimeType = msg.document.mime_type || "";
+
+      // Check if it's an image file
+      if (mimeType.startsWith("image/")) {
+        // Validate the file_id with Telegram API
+        const fileInfo = await getFileInfo(fileId);
+        if (!fileInfo.success) {
+          bot.sendMessage(
+            chatId,
+            "❌ Invalid image file. Please try uploading again or type /no to skip."
+          );
+          return;
+        }
+
+        const result = await processWagerCreationStep(telegramUserId, fileId);
+
+        if (result.success) {
+          bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
+        } else {
+          bot.sendMessage(chatId, result.message);
+        }
+      } else {
+        bot.sendMessage(
+          chatId,
+          "❌ Please upload an image file (JPG, PNG, GIF, etc.). Other file types are not supported."
+        );
+      }
+    } catch (error) {
+      console.error("Error processing document:", error);
+      bot.sendMessage(
+        chatId,
+        "❌ Error processing file. Please try again or type /no to skip."
+      );
+    }
+    return;
+  }
+
+  // Handle video uploads (for GIFs or video thumbnails)
+  if (msg.video) {
+    try {
+      const fileId = msg.video.file_id;
+
+      // Validate the file_id with Telegram API
+      const fileInfo = await getFileInfo(fileId);
+      if (!fileInfo.success) {
+        bot.sendMessage(
+          chatId,
+          "❌ Invalid video file. Please try uploading again or type /no to skip."
+        );
+        return;
+      }
+
+      const result = await processWagerCreationStep(telegramUserId, fileId);
+
+      if (result.success) {
+        bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
+      } else {
+        bot.sendMessage(chatId, result.message);
+      }
+    } catch (error) {
+      console.error("Error processing video:", error);
+      bot.sendMessage(
+        chatId,
+        "❌ Error processing video. Please try again or type /no to skip."
+      );
+    }
+    return;
+  }
+
+  // Handle animation uploads (GIFs)
+  if (msg.animation) {
+    try {
+      const fileId = msg.animation.file_id;
+
+      // Validate the file_id with Telegram API
+      const fileInfo = await getFileInfo(fileId);
+      if (!fileInfo.success) {
+        bot.sendMessage(
+          chatId,
+          "❌ Invalid animation file. Please try uploading again or type /no to skip."
+        );
+        return;
+      }
+
+      const result = await processWagerCreationStep(telegramUserId, fileId);
+
+      if (result.success) {
+        bot.sendMessage(chatId, result.message, { parse_mode: "Markdown" });
+      } else {
+        bot.sendMessage(chatId, result.message);
+      }
+    } catch (error) {
+      console.error("Error processing animation:", error);
+      bot.sendMessage(
+        chatId,
+        "❌ Error processing animation. Please try again or type /no to skip."
+      );
+    }
+    return;
+  }
+
+  // If no text and no media, ignore the message
+  if (!text) {
     return;
   }
 
@@ -1097,8 +1284,506 @@ ${getCategoriesList()}`;
       );
     }
   }
+
+  // Handle winner determination callbacks
+  if (data.startsWith("winner_side1_") || data.startsWith("winner_side2_")) {
+    await handleWinnerDeterminationCallback(callbackQuery);
+    return;
+  }
+
+  // Handle check winner callbacks
+  if (data.startsWith("check_winner_")) {
+    await handleCheckWinnerCallback(callbackQuery);
+    return;
+  }
+}
+
+// Function to get file info from Telegram API
+async function getFileInfo(
+  fileId: string
+): Promise<{ success: boolean; filePath?: string; error?: string }> {
+  try {
+    const fileInfo = await bot.getFile(fileId);
+    return {
+      success: true,
+      filePath: fileInfo.file_path,
+    };
+  } catch (error) {
+    console.error(`Error getting file info for ${fileId}:`, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+// Function to clean up invalid file_ids in database
+async function cleanupInvalidFileIds(): Promise<void> {
+  try {
+    const dbConnection = await createDatabaseConnection();
+
+    // First, get all wagers with image_file_id
+    const [rows] = await dbConnection.execute(
+      "SELECT id, image_file_id FROM wagers WHERE image_file_id IS NOT NULL"
+    );
+
+    let cleanedCount = 0;
+
+    for (const row of rows as any[]) {
+      const fileId = row.image_file_id;
+
+      // Check if it's a URL (keep those)
+      if (fileId.startsWith("http")) {
+        continue;
+      }
+
+      // Check if it looks like a valid file_id
+      if (!isValidTelegramFileId(fileId)) {
+        // Update to NULL
+        await dbConnection.execute(
+          "UPDATE wagers SET image_file_id = NULL WHERE id = ?",
+          [row.id]
+        );
+        cleanedCount++;
+        continue;
+      }
+
+      // Validate with Telegram API
+      try {
+        const fileInfo = await getFileInfo(fileId);
+        if (!fileInfo.success) {
+          // File doesn't exist on Telegram, remove it
+          await dbConnection.execute(
+            "UPDATE wagers SET image_file_id = NULL WHERE id = ?",
+            [row.id]
+          );
+          cleanedCount++;
+        }
+      } catch (error) {
+        // Error validating file, remove it
+        await dbConnection.execute(
+          "UPDATE wagers SET image_file_id = NULL WHERE id = ?",
+          [row.id]
+        );
+        cleanedCount++;
+      }
+    }
+
+    await dbConnection.end();
+  } catch (error) {
+    console.error("Error cleaning up invalid file_ids:", error);
+  }
+}
+
+// Function to check and update expired wagers
+async function checkExpiredWagers(): Promise<void> {
+  try {
+    const expiredCount = await updateExpiredWagers();
+    if (expiredCount > 0) {
+      console.log(
+        `🕐 Updated ${expiredCount} expired wagers to 'ended' status`
+      );
+    }
+  } catch (error) {
+    console.error("Error checking expired wagers:", error);
+  }
+}
+
+// Schedule expired wager checks and winner determination (every 5 minutes)
+function scheduleExpiredWagerChecks(): void {
+  setInterval(async () => {
+    await checkExpiredWagers();
+    await checkWagersNeedingWinnerDetermination();
+  }, 5 * 60 * 1000); // 5 minutes
+}
+
+// Winner determination state management
+interface WinnerDeterminationState {
+  telegramUserId: number;
+  wagerId: number;
+  wagerName: string;
+  side1: string;
+  side2: string;
+}
+
+const winnerDeterminationStates = new Map<number, WinnerDeterminationState>();
+
+function setWinnerDeterminationState(
+  telegramUserId: number,
+  state: WinnerDeterminationState
+): void {
+  winnerDeterminationStates.set(telegramUserId, state);
+}
+
+function getWinnerDeterminationState(
+  telegramUserId: number
+): WinnerDeterminationState | null {
+  return winnerDeterminationStates.get(telegramUserId) || null;
+}
+
+function clearWinnerDeterminationState(telegramUserId: number): void {
+  winnerDeterminationStates.delete(telegramUserId);
+}
+
+// Function to check for wagers that need winner determination
+async function checkWagersNeedingWinnerDetermination(): Promise<void> {
+  try {
+    const wagersNeedingWinner = await getEndedWagersWithoutWinner();
+
+    for (const wager of wagersNeedingWinner) {
+      // Ask the wager creator to determine the winner
+      await askWagerCreatorForWinner(wager);
+    }
+  } catch (error) {
+    console.error("Error checking wagers needing winner determination:", error);
+  }
+}
+
+// Function to ask wager creator for winner determination
+async function askWagerCreatorForWinner(wager: any): Promise<void> {
+  try {
+    const message = `🏆 <b>Winner Determination Required</b>
+
+🎲 <b>Wager:</b> ${wager.name}
+📂 <b>Category:</b> ${wager.category}
+⏰ <b>Ended:</b> ${new Date(wager.wager_end_time).toLocaleString()}
+
+💰 <b>Total Pool:</b> ${wager.total_pool_amount || 0} VS token
+
+<b>Please determine the winner:</b>`;
+
+    const winnerKeyboard = {
+      inline_keyboard: [
+        [
+          {
+            text: `🏆 ${wager.side_1} (Side 1)`,
+            callback_data: `winner_side1_${wager.id}`,
+          },
+          {
+            text: `🏆 ${wager.side_2} (Side 2)`,
+            callback_data: `winner_side2_${wager.id}`,
+          },
+        ],
+      ],
+    };
+
+    await bot.sendMessage(wager.creator_telegram_user_id, message, {
+      parse_mode: "HTML",
+      reply_markup: winnerKeyboard,
+    });
+  } catch (error) {
+    console.error(
+      `Error asking creator ${wager.creator_telegram_user_id} for winner determination:`,
+      error
+    );
+  }
+}
+
+// Handle winner determination callback
+async function handleWinnerDeterminationCallback(
+  callbackQuery: TelegramBot.CallbackQuery
+): Promise<void> {
+  const chatId = callbackQuery.message?.chat.id;
+  const data = callbackQuery.data;
+  const telegramUserId = callbackQuery.from?.id;
+
+  if (!chatId || !data || !telegramUserId) {
+    return;
+  }
+
+  try {
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data.startsWith("winner_side1_") || data.startsWith("winner_side2_")) {
+      const wagerId = parseInt(
+        data.replace("winner_side1_", "").replace("winner_side2_", "")
+      );
+      const winningSide = data.startsWith("winner_side1_")
+        ? "side_1"
+        : "side_2";
+
+      if (isNaN(wagerId)) {
+        bot.sendMessage(chatId, "❌ Invalid wager ID.");
+        return;
+      }
+
+      // Update the winning side in the database
+      const success = await updateWagerWinningSide(wagerId, winningSide);
+
+      if (success) {
+        bot.sendMessage(
+          chatId,
+          `🏆 <b>Winner Determined Successfully!</b>\n\n🎲 <b>Winning Side:</b> ${
+            winningSide === "side_1" ? "Side 1" : "Side 2"
+          }\n\n✅ The winning side has been saved to the database.`,
+          { parse_mode: "HTML" }
+        );
+      } else {
+        bot.sendMessage(
+          chatId,
+          "❌ Failed to update winning side. The wager may not be in 'ended' status or you may not have permission.",
+          { parse_mode: "HTML" }
+        );
+      }
+    }
+  } catch (error) {
+    console.error("Error handling winner determination callback:", error);
+    bot.sendMessage(
+      chatId,
+      "❌ An error occurred while processing the winner determination."
+    );
+  }
+}
+
+async function handleCheckWinners(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+  const telegramUserId = msg.from?.id;
+
+  if (!telegramUserId) {
+    bot.sendMessage(chatId, "❌ Unable to identify user.");
+    return;
+  }
+
+  try {
+    const wagersNeedingWinner = await getEndedWagersWithoutWinner();
+
+    if (wagersNeedingWinner.length === 0) {
+      bot.sendMessage(
+        chatId,
+        "📭 No wagers found that need winner determination."
+      );
+      return;
+    }
+
+    const message = `📋 **Wagers Needing Winner Determination** (${wagersNeedingWinner.length} total)
+
+Click on a wager to determine the winner:`;
+
+    const inlineKeyboard = {
+      inline_keyboard: wagersNeedingWinner.map((wager: any) => [
+        {
+          text: `🎲 ${wager.name} (${wager.category})`,
+          callback_data: `check_winner_${wager.id}`,
+        },
+      ]),
+    };
+
+    bot.sendMessage(chatId, message, {
+      parse_mode: "Markdown",
+      reply_markup: inlineKeyboard,
+    });
+  } catch (error) {
+    console.error("Error handling check_winners command:", error);
+    bot.sendMessage(chatId, "❌ An error occurred while checking wagers.");
+  }
+}
+
+// Handle check winner callback
+async function handleCheckWinnerCallback(
+  callbackQuery: TelegramBot.CallbackQuery
+): Promise<void> {
+  const chatId = callbackQuery.message?.chat.id;
+  const data = callbackQuery.data;
+  const telegramUserId = callbackQuery.from?.id;
+
+  if (!chatId || !data || !telegramUserId) {
+    return;
+  }
+
+  try {
+    await bot.answerCallbackQuery(callbackQuery.id);
+
+    if (data.startsWith("check_winner_")) {
+      const wagerId = parseInt(data.replace("check_winner_", ""));
+
+      if (isNaN(wagerId)) {
+        bot.sendMessage(chatId, "❌ Invalid wager ID.");
+        return;
+      }
+
+      // Get wager details
+      const result = await getWager(wagerId);
+      if (!result.success) {
+        bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+        return;
+      }
+
+      const wager = result.data;
+
+      // Check if wager has ended and needs winner determination
+      const now = new Date();
+      const endTime = new Date(wager.wager_end_time);
+      if (endTime > now) {
+        bot.sendMessage(chatId, "❌ This wager has not ended yet.");
+        return;
+      }
+
+      if (wager.winning_side) {
+        bot.sendMessage(
+          chatId,
+          `🏆 <b>Winner Already Determined</b>\n\n🎲 <b>Wager:</b> ${
+            wager.name
+          }\n🏆 <b>Winner:</b> ${
+            wager.winning_side === "side_1" ? wager.side_1 : wager.side_2
+          }`,
+          { parse_mode: "HTML" }
+        );
+        return;
+      }
+
+      // Ask for winner determination
+      await askWagerCreatorForWinner(wager);
+    }
+  } catch (error) {
+    console.error("Error handling check winner callback:", error);
+    bot.sendMessage(
+      chatId,
+      "❌ An error occurred while processing the request."
+    );
+  }
+}
+
+// Daily airdrop state
+let dailyAirdropRunning = false;
+const DAILY_AIRDROP_AMOUNT = 50000; // 50,000 VS tokens
+
+// Function to perform daily airdrop
+async function performDailyAirdrop(): Promise<void> {
+  if (dailyAirdropRunning) {
+    console.log("🔄 Daily airdrop already running, skipping...");
+    return;
+  }
+
+  dailyAirdropRunning = true;
+  console.log("🎁 Starting daily airdrop...");
+
+  try {
+    const usersWithWallets = await getAllUsersWithWallets();
+    console.log(
+      `📊 Found ${usersWithWallets.length} users with wallets for daily airdrop`
+    );
+
+    if (usersWithWallets.length === 0) {
+      console.log("⚠️ No users with wallets found for airdrop");
+      return;
+    }
+
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const user of usersWithWallets) {
+      try {
+        console.log(
+          `🔄 Processing user ${user.telegram_user_id} with wallet ${user.wallet_public_key}`
+        );
+
+        // Send 50,000 VS tokens from admin wallet to user wallet
+        const transferResult = await transferVSTokens(
+          user.wallet_public_key,
+          DAILY_AIRDROP_AMOUNT
+        );
+
+        if (transferResult.success) {
+          successCount++;
+          console.log(
+            `✅ Sent ${DAILY_AIRDROP_AMOUNT} VS tokens to user ${user.telegram_user_id} (tx: ${transferResult.signature})`
+          );
+
+          // Send notification to user
+          try {
+            await bot.sendMessage(
+              user.telegram_user_id,
+              `🎁 <b>Daily Airdrop!</b>\n\n💰 You received <b>${DAILY_AIRDROP_AMOUNT.toLocaleString()} VS tokens</b>\n\n🎲 Use them to place bets on wagers!`,
+              { parse_mode: "HTML" }
+            );
+          } catch (notificationError) {
+            console.error(
+              `Failed to send notification to user ${user.telegram_user_id}:`,
+              notificationError
+            );
+          }
+        } else {
+          failureCount++;
+          console.error(
+            `❌ Failed to send tokens to user ${user.telegram_user_id}:`,
+            transferResult.error
+          );
+        }
+
+        // Small delay between transfers to avoid rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } catch (error) {
+        failureCount++;
+        console.error(
+          `❌ Error processing user ${user.telegram_user_id}:`,
+          error
+        );
+      }
+    }
+
+    console.log(
+      `🎁 Daily airdrop completed: ${successCount} successful, ${failureCount} failed`
+    );
+  } catch (error) {
+    console.error("❌ Error during daily airdrop:", error);
+  } finally {
+    dailyAirdropRunning = false;
+  }
+}
+
+// Function to schedule daily airdrop at 00:00
+function scheduleDailyAirdrop(): void {
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+
+  const timeUntilMidnight = tomorrow.getTime() - now.getTime();
+
+  // Schedule first run at midnight
+  setTimeout(() => {
+    performDailyAirdrop();
+
+    // Then schedule to run every 24 hours
+    setInterval(performDailyAirdrop, 24 * 60 * 60 * 1000);
+  }, timeUntilMidnight);
+
+  console.log(`⏰ Daily airdrop scheduled for ${tomorrow.toLocaleString()}`);
+}
+
+// Handle manual airdrop command (for testing)
+async function handleDailyAirdrop(msg: TelegramBot.Message): Promise<void> {
+  const chatId = msg.chat.id;
+  const telegramUserId = msg.from?.id;
+
+  if (!telegramUserId) {
+    bot.sendMessage(chatId, "❌ Unable to identify user.");
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, "🎁 Starting manual daily airdrop...");
+    await performDailyAirdrop();
+    bot.sendMessage(chatId, "✅ Daily airdrop completed!");
+  } catch (error) {
+    console.error("Error handling manual daily airdrop:", error);
+    bot.sendMessage(chatId, "❌ An error occurred during daily airdrop.");
+  }
 }
 
 export function startBot(token: string): void {
-  initializeBot(token);
+  bot = new TelegramBot(token, { polling: true });
+
+  setupEventHandlers();
+  setupBotMenu();
+
+  // Clean up any invalid file_ids in the database
+  cleanupInvalidFileIds().catch((error) => {
+    console.error("Error during file_id cleanup:", error);
+  });
+
+  scheduleExpiredWagerChecks();
+  scheduleDailyAirdrop(); // Schedule daily airdrop
+
+  console.log("✅ Telegram bot started successfully!");
 }

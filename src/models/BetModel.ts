@@ -17,12 +17,10 @@ export interface CreateBetRequest {
   amount: number;
 }
 
-async function getConnection(): Promise<mysql.Connection> {
-  return await createDatabaseConnection();
-}
+// Remove the getConnection function and create new connections for each operation
 
 export async function createBet(request: CreateBetRequest): Promise<Bet> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     // First, ensure the bets table exists
@@ -68,11 +66,13 @@ export async function createBet(request: CreateBetRequest): Promise<Bet> {
   } catch (error) {
     console.error("Error creating bet:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getBetsByWager(wagerId: number): Promise<Bet[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -84,11 +84,13 @@ export async function getBetsByWager(wagerId: number): Promise<Bet[]> {
   } catch (error) {
     console.error("Error getting bets by wager:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getBetsByUser(userTelegramId: number): Promise<Bet[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -100,11 +102,13 @@ export async function getBetsByUser(userTelegramId: number): Promise<Bet[]> {
   } catch (error) {
     console.error("Error getting bets by user:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getTotalPoolAmount(wagerId: number): Promise<number> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -112,16 +116,40 @@ export async function getTotalPoolAmount(wagerId: number): Promise<number> {
       [wagerId]
     );
 
-    const result = rows as any[];
-    return result[0]?.total || 0;
+    const result = rows as { total: number }[];
+    return Number(result[0].total);
   } catch (error) {
     console.error("Error getting total pool amount:", error);
-    return 0;
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getTotalAmountBySide(
+  wagerId: number,
+  side: "side_1" | "side_2"
+): Promise<number> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT COALESCE(SUM(amount), 0) as total FROM bets WHERE wager_id = ? AND side = ?",
+      [wagerId, side]
+    );
+
+    const result = rows as { total: number }[];
+    return Number(result[0].total);
+  } catch (error) {
+    console.error("Error getting total amount by side:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function updateWagerPoolAmount(wagerId: number): Promise<void> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     // Calculate total pool amount
@@ -135,11 +163,13 @@ export async function updateWagerPoolAmount(wagerId: number): Promise<void> {
   } catch (error) {
     console.error("Error updating wager pool amount:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getBetById(betId: number): Promise<Bet | null> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -152,5 +182,7 @@ export async function getBetById(betId: number): Promise<Bet | null> {
   } catch (error) {
     console.error("Error getting bet by ID:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }

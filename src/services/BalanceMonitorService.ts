@@ -24,7 +24,14 @@ export async function startMonitoring(
       walletPubkey,
       async (accountInfo: AccountInfo<Buffer>) => {
         console.log(`💰 SOL balance change detected for wallet: ${publicKey}`);
-        await updateWalletBalances(publicKey, telegramUserId);
+        try {
+          await updateWalletBalances(publicKey, telegramUserId);
+        } catch (error) {
+          console.error(
+            `❌ Error updating SOL balance for wallet ${publicKey}:`,
+            error
+          );
+        }
       },
       "confirmed"
     );
@@ -42,7 +49,14 @@ export async function startMonitoring(
           console.log(
             `🪙 VS token balance change detected for wallet: ${publicKey}`
           );
-          await updateWalletBalances(publicKey, telegramUserId);
+          try {
+            await updateWalletBalances(publicKey, telegramUserId);
+          } catch (error) {
+            console.error(
+              `❌ Error updating VS token balance for wallet ${publicKey}:`,
+              error
+            );
+          }
         },
         "confirmed"
       );
@@ -117,6 +131,7 @@ async function updateWalletBalances(
     );
   } catch (error) {
     console.error(`❌ Error updating balances for wallet ${publicKey}:`, error);
-    throw error;
+    // Don't throw the error to prevent it from crashing the airdrop process
+    // Just log it and continue
   }
 }

@@ -23,14 +23,12 @@ export interface CreateTransactionRequest {
   transaction_hash?: string;
 }
 
-async function getConnection(): Promise<mysql.Connection> {
-  return await createDatabaseConnection();
-}
+// Remove the getConnection function and create new connections for each operation
 
 export async function createTransaction(
   request: CreateTransactionRequest
 ): Promise<TransactionHistory> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     await dbConnection.execute(`
@@ -91,13 +89,15 @@ export async function createTransaction(
   } catch (error) {
     console.error("Error creating transaction:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getTransactionsByWager(
   wagerId: number
 ): Promise<TransactionHistory[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -109,13 +109,15 @@ export async function getTransactionsByWager(
   } catch (error) {
     console.error("Error getting transactions by wager:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getTransactionsByUser(
   userTelegramId: number
 ): Promise<TransactionHistory[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -127,24 +129,8 @@ export async function getTransactionsByUser(
   } catch (error) {
     console.error("Error getting transactions by user:", error);
     throw error;
-  }
-}
-
-export async function getTransactionsByWallet(
-  walletAddress: string
-): Promise<TransactionHistory[]> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(
-      "SELECT * FROM transaction_history WHERE wallet_address = ? ORDER BY created_at DESC",
-      [walletAddress]
-    );
-
-    return rows as TransactionHistory[];
-  } catch (error) {
-    console.error("Error getting transactions by wallet:", error);
-    throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
@@ -153,7 +139,7 @@ export async function updateTransactionStatus(
   status: "pending" | "completed" | "failed",
   transactionHash?: string
 ): Promise<void> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     if (transactionHash) {
@@ -170,13 +156,15 @@ export async function updateTransactionStatus(
   } catch (error) {
     console.error("Error updating transaction status:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getTransactionById(
   transactionId: number
 ): Promise<TransactionHistory | null> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -189,5 +177,29 @@ export async function getTransactionById(
   } catch (error) {
     console.error("Error getting transaction by ID:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getTotalAmountBySide(
+  wagerId: number,
+  side: "side_1" | "side_2"
+): Promise<number> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT COALESCE(SUM(amount), 0) as total FROM transaction_history WHERE wager_id = ? AND side = ? AND status = 'completed'",
+      [wagerId, side]
+    );
+
+    const result = rows as { total: number }[];
+    return Number(result[0].total);
+  } catch (error) {
+    console.error("Error getting total amount by side:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
   }
 }

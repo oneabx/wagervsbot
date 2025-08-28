@@ -24,6 +24,7 @@ export type WagerCreationStep =
   | "reviewing"
   | "completed";
 
+// In-memory storage for wager creation states (in production, use Redis or database)
 const wagerCreationStates = new Map<number, WagerCreationState>();
 
 export function initializeWagerCreation(
@@ -281,7 +282,8 @@ function processSide2Entry(
 
   return {
     success: true,
-    message: "✅ Side 2 set! Now, paste an image URL (or type /no to skip):",
+    message:
+      "✅ Side 2 set! Now, upload an image for your wager:\n\n📸 **Supported formats:**\n• Photos (JPG, PNG)\n• Documents (image files)\n• Videos/GIFs\n• Or type /no to skip",
     nextStep: "entering_image",
     state: updatedState!,
   };
@@ -297,14 +299,20 @@ function processImageEntry(
   state?: WagerCreationState;
 } {
   const imageInput = userInput.trim();
+
   let image_file_id: string | undefined;
 
   if (imageInput.toLowerCase() === "/no") {
     image_file_id = undefined;
   } else if (imageInput.startsWith("http")) {
+    // If it's a URL, store it as is
+    image_file_id = imageInput;
+  } else if (isValidTelegramFileId(imageInput)) {
+    // This is a valid Telegram file_id
     image_file_id = imageInput;
   } else {
-    image_file_id = imageInput;
+    // Invalid input - treat as no image
+    image_file_id = undefined;
   }
 
   const updatedState = updateWagerCreationState(state.telegramUserId, {
@@ -319,6 +327,25 @@ function processImageEntry(
     nextStep: "entering_end_time",
     state: updatedState!,
   };
+}
+
+// Helper function to validate Telegram file_id
+function isValidTelegramFileId(fileId: string): boolean {
+  if (!fileId || fileId.trim() === "") {
+    return false;
+  }
+
+  // Telegram file_ids are typically long strings with underscores
+  // They should be at least 20 characters and contain underscores
+  // They should not contain spaces or special characters that would break them
+  return (
+    fileId.length >= 20 &&
+    fileId.includes("_") &&
+    !fileId.includes(" ") &&
+    !fileId.includes("\n") &&
+    !fileId.includes("\r") &&
+    /^[A-Za-z0-9_-]+$/.test(fileId) // Only alphanumeric, underscore, and hyphen
+  );
 }
 
 function processEndTimeEntry(

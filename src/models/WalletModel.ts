@@ -2,21 +2,15 @@ import mysql from "mysql2/promise";
 import { Wallet, CreateWalletRequest } from "../types/wallet";
 import { createDatabaseConnection } from "../config/database";
 
-let connection: mysql.Connection | null = null;
-
-async function getConnection(): Promise<mysql.Connection> {
-  if (!connection) {
-    connection = await createDatabaseConnection();
-  }
-  return connection;
-}
+// Remove the global connection variable and getConnection function
+// Instead, create a new connection for each operation
 
 export async function createWallet(
   request: CreateWalletRequest,
   publicKey: string,
   privateKey: string
 ): Promise<Wallet> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [result] = await dbConnection.execute(
@@ -39,13 +33,15 @@ export async function createWallet(
   } catch (error) {
     console.error("Error creating wallet:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getBalance(
   telegramUserId: number
 ): Promise<{ sol_amount: number; vs_token_amount: number } | null> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -58,13 +54,15 @@ export async function getBalance(
   } catch (error) {
     console.error("Error getting wallet balance:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getWalletByTelegramId(
   telegramUserId: number
 ): Promise<{ wallet_public_key: string; wallet_private_key: string } | null> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -80,11 +78,13 @@ export async function getWalletByTelegramId(
   } catch (error) {
     console.error("Error getting wallet by telegram ID:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function walletExists(telegramUserId: number): Promise<boolean> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -97,6 +97,8 @@ export async function walletExists(telegramUserId: number): Promise<boolean> {
   } catch (error) {
     console.error("Error checking if wallet exists:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
@@ -105,7 +107,7 @@ export async function updateWalletBalance(
   solAmount: number,
   vsTokenAmount: number
 ): Promise<void> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     await dbConnection.execute(
@@ -115,6 +117,8 @@ export async function updateWalletBalance(
   } catch (error) {
     console.error("Error updating wallet balance:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
@@ -125,7 +129,7 @@ export async function getAllWallets(): Promise<
     telegram_user_id: number;
   }[]
 > {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -140,5 +144,51 @@ export async function getAllWallets(): Promise<
   } catch (error) {
     console.error("Error getting all wallets:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getAllUsers(): Promise<{ telegram_user_id: number }[]> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT DISTINCT telegram_user_id FROM wallets ORDER BY telegram_user_id"
+    );
+
+    return rows as { telegram_user_id: number }[];
+  } catch (error) {
+    console.error("Error getting all users:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getAllUsersWithWallets(): Promise<
+  {
+    telegram_user_id: number;
+    wallet_public_key: string;
+    wallet_private_key: string;
+  }[]
+> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT telegram_user_id, wallet_public_key, wallet_private_key FROM wallets ORDER BY telegram_user_id"
+    );
+
+    return rows as {
+      telegram_user_id: number;
+      wallet_public_key: string;
+      wallet_private_key: string;
+    }[];
+  } catch (error) {
+    console.error("Error getting all users with wallets:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
   }
 }

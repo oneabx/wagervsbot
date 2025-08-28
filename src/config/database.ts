@@ -24,7 +24,6 @@ export const createDatabaseConnection = async () => {
 
   try {
     const connection = await mysql.createConnection(config);
-    console.log("✅ Database connected successfully");
     return connection;
   } catch (error) {
     console.error("❌ Database connection failed:", error);

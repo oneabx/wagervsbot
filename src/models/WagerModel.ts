@@ -16,7 +16,7 @@ export interface Wager {
   wager_type: "private" | "public";
   status: "active" | "ended" | "cancelled";
   total_pool_amount?: number;
-  winning_side?: string;
+  winning_side?: "side_1" | "side_2";
   created_at?: Date;
   updated_at?: Date;
 }
@@ -35,12 +35,10 @@ export interface CreateWagerRequest {
   wager_type: "private" | "public";
 }
 
-async function getConnection(): Promise<mysql.Connection> {
-  return await createDatabaseConnection();
-}
+// Remove the getConnection function and create new connections for each operation
 
 export async function createWager(request: CreateWagerRequest): Promise<Wager> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     await dbConnection.execute(`
@@ -118,11 +116,13 @@ export async function createWager(request: CreateWagerRequest): Promise<Wager> {
   } catch (error) {
     console.error("Error creating wager:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getAllWagers(): Promise<Wager[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(`
@@ -135,11 +135,13 @@ export async function getAllWagers(): Promise<Wager[]> {
   } catch (error) {
     console.error("Error getting all wagers:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getWagerById(wagerId: number): Promise<Wager | null> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -152,11 +154,131 @@ export async function getWagerById(wagerId: number): Promise<Wager | null> {
   } catch (error) {
     console.error("Error getting wager by ID:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function updateWagerStatus(
+  wagerId: number,
+  status: "active" | "ended" | "cancelled"
+): Promise<void> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    await dbConnection.execute(
+      "UPDATE wagers SET status = ?, updated_at = NOW() WHERE id = ?",
+      [status, wagerId]
+    );
+  } catch (error) {
+    console.error("Error updating wager status:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function updateWagerWinningSide(
+  wagerId: number,
+  winningSide: "side_1" | "side_2"
+): Promise<boolean> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [result] = await dbConnection.execute(
+      "UPDATE wagers SET winning_side = ?, status = 'ended', updated_at = NOW() WHERE id = ?",
+      [winningSide, wagerId]
+    );
+
+    const updateResult = result as mysql.ResultSetHeader;
+    return updateResult.affectedRows > 0;
+  } catch (error) {
+    console.error("Error updating wager winning side:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function updateWagerPoolAmount(
+  wagerId: number,
+  totalPoolAmount: number
+): Promise<void> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    await dbConnection.execute(
+      "UPDATE wagers SET total_pool_amount = ?, updated_at = NOW() WHERE id = ?",
+      [totalPoolAmount, wagerId]
+    );
+  } catch (error) {
+    console.error("Error updating wager pool amount:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getExpiredWagers(): Promise<Wager[]> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(`
+      SELECT * FROM wagers 
+      WHERE status = 'active' AND wager_end_time <= NOW()
+      ORDER BY wager_end_time ASC
+    `);
+
+    return rows as Wager[];
+  } catch (error) {
+    console.error("Error getting expired wagers:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getEndedWagersWithoutWinner(): Promise<Wager[]> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(`
+      SELECT * FROM wagers 
+      WHERE status = 'ended' AND winning_side IS NULL
+      ORDER BY wager_end_time ASC
+    `);
+
+    return rows as Wager[];
+  } catch (error) {
+    console.error("Error getting ended wagers without winner:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
+  }
+}
+
+export async function getWagersByCreator(
+  creatorTelegramUserId: number
+): Promise<Wager[]> {
+  const dbConnection = await createDatabaseConnection();
+
+  try {
+    const [rows] = await dbConnection.execute(
+      "SELECT * FROM wagers WHERE creator_telegram_user_id = ? ORDER BY created_at DESC",
+      [creatorTelegramUserId]
+    );
+
+    return rows as Wager[];
+  } catch (error) {
+    console.error("Error getting wagers by creator:", error);
+    throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
 export async function getWagersByCategory(category: string): Promise<Wager[]> {
-  const dbConnection = await getConnection();
+  const dbConnection = await createDatabaseConnection();
 
   try {
     const [rows] = await dbConnection.execute(
@@ -168,67 +290,27 @@ export async function getWagersByCategory(category: string): Promise<Wager[]> {
   } catch (error) {
     console.error("Error getting wagers by category:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }
 
-export async function updateWagerStatus(
-  wagerId: number,
-  status: "active" | "ended" | "cancelled",
-  winningSide?: "side_1" | "side_2"
-): Promise<void> {
-  const dbConnection = await getConnection();
+export async function updateExpiredWagers(): Promise<number> {
+  const dbConnection = await createDatabaseConnection();
 
   try {
-    if (winningSide) {
-      await dbConnection.execute(
-        "UPDATE wagers SET status = ?, winning_side = ?, updated_at = NOW() WHERE id = ?",
-        [status, winningSide, wagerId]
-      );
-    } else {
-      await dbConnection.execute(
-        "UPDATE wagers SET status = ?, updated_at = NOW() WHERE id = ?",
-        [status, wagerId]
-      );
-    }
-  } catch (error) {
-    console.error("Error updating wager status:", error);
-    throw error;
-  }
-}
-
-export async function getActiveWagersCount(): Promise<number> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(
-      "SELECT COUNT(*) as count FROM wagers WHERE status = 'active'"
-    );
-
-    const result = rows as { count: number }[];
-    return result[0].count;
-  } catch (error) {
-    console.error("Error getting active wagers count:", error);
-    throw error;
-  }
-}
-
-export async function getWagersEndingSoon(
-  hours: number = 24
-): Promise<Wager[]> {
-  const dbConnection = await getConnection();
-
-  try {
-    const [rows] = await dbConnection.execute(
-      `SELECT * FROM wagers 
+    const [result] = await dbConnection.execute(
+      `UPDATE wagers 
+       SET status = 'ended', updated_at = NOW() 
        WHERE status = 'active' 
-         AND wager_end_time BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL ? HOUR)
-       ORDER BY wager_end_time ASC`,
-      [hours]
+       AND wager_end_time <= NOW()`
     );
 
-    return rows as Wager[];
+    return (result as any).affectedRows || 0;
   } catch (error) {
-    console.error("Error getting wagers ending soon:", error);
+    console.error("Error updating expired wagers:", error);
     throw error;
+  } finally {
+    await dbConnection.end();
   }
 }

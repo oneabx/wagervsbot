@@ -410,9 +410,11 @@ export async function transferVSTokens(
 
     const transaction = new Transaction();
 
-    try {
-      await connection.getAccountInfo(toTokenAccount);
-    } catch {
+    // Check if the recipient's token account exists
+    const toTokenAccountInfo = await connection.getAccountInfo(toTokenAccount);
+
+    if (!toTokenAccountInfo) {
+      // Token account doesn't exist, create it first
       const createAccountInstruction = createAssociatedTokenAccountInstruction(
         adminKeypair.publicKey,
         toTokenAccount,
